@@ -1,0 +1,87 @@
+stages:
+  - build
+  - test
+  - security_static
+  - security_dynamic
+  - deploy
+
+build:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  script:
+    - docker build -t my-app .
+    - docker save my-app -o docker-image.tar
+  artifacts:
+    paths:
+      - docker-image.tar
+    expire_in: 1 day
+
+test:
+  stage: test
+  image: your-test-image # e.g., node:latest, python:latest
+  script:
+    - npm install || pip install -r requirements.txt # or similar
+    - npm test || pytest # or similar
+  dependencies:
+    - build
+
+sonar_scan:
+  stage: security_static
+  image: sonarsource/sonar-scanner-cli:latest
+  variables:
+    SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar"
+    SONAR_HOST_URL: "http://your-sonarqube-server:9000"
+    SONAR_SCANNER_OPTS: "-Dsonar.projectKey=my-app -Dsonar.sources=. -Dsonar.login=$SONAR_TOKEN -Dsonar.qualitygate.wait=true" #wait for quality gate
+  script:
+    - sonar-scanner
+  artifacts:
+    reports:
+      sonarqualitygate: ${CI_PROJECT_DIR}/.sonar/qualitygate.json
+  dependencies:
+    - build
+  rules:
+    - changes:
+        - '**/*.java' #Scan only if java files changed (example)
+        - '**/*.js'
+        - '**/*.py'
+
+zap_baseline_scan:
+  stage: security_dynamic
+  image: owasp/zap:stable
+  script:
+    - zap-baseline.py -t http://your-deployed-app.com -r zap-baseline-report.html
+  artifacts:
+    paths:
+      - zap-baseline-report.html
+  dependencies:
+    - deploy
+
+zap_full_scan:
+  stage: security_dynamic
+  image: owasp/zap:stable
+  script:
+    - zap-full-scan.py -t http://your-deployed-app.com -r zap-full-report.html
+  artifacts:
+    paths:
+      - zap-full-report.html
+  dependencies:
+    - deploy
+  allow_failure: true #full scans can find many low risk items.
+
+deploy:
+  stage: deploy
+  image: docker:latest
+  services:
+    - docker:dind
+  script:
+    - docker load -i docker-image.tar
+    - docker run -d -p 80:80 my-app # or your deployment commands
+  dependencies:
+    - build
+  environment:
+    name: production
+    url: http://your-deployed-app.com
+  only:
+    - main #or your production branch.
